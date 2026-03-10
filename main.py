@@ -1,13 +1,18 @@
+from __future__ import annotations
+
 import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import customtkinter as ctk
 from PIL import Image, ImageDraw, ImageEnhance, ImageFont
@@ -34,43 +39,16 @@ def _check_avif() -> bool:
     try:
         Image.new("RGB", (1, 1)).save(io.BytesIO(), "AVIF")
         return True
-    except Exception:
+    except (KeyError, OSError, ValueError):
         return False
 
 AVIF_SUPPORT = _check_avif()
 
-# ── Renk paleti ────────────────────────────────────────────────────────────
-BG         = "#0d1117"
-SURFACE    = "#13171f"
-CARD       = "#1c2132"
-ACCENT     = "#7c3aed"
-ACCENT_H   = "#6d28d9"
-TEXT       = "#e2e8f0"
-TEXT_DIM   = "#94a3b8"
-TEXT_MUTED = "#64748b"
-DANGER     = "#dc2626"
-BORDER     = "#2d3550"
-
-# ── Format tabloları ───────────────────────────────────────────────────────
-SUPPORTED_INPUT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif", ".avif"}
-if HEIC_SUPPORT:
-    SUPPORTED_INPUT |= {".heic", ".heif"}
-
-OUTPUT_FORMATS = ["JPG", "PNG", "WEBP", "BMP", "TIFF"]
-if AVIF_SUPPORT:
-    OUTPUT_FORMATS.append("AVIF")
-
-EXT_MAP = {"JPG": ".jpg", "PNG": ".png", "WEBP": ".webp", "BMP": ".bmp", "TIFF": ".tiff", "AVIF": ".avif"}
-PIL_MAP = {"JPG": "JPEG", "PNG": "PNG",  "WEBP": "WEBP",  "BMP": "BMP",  "TIFF": "TIFF",  "AVIF": "AVIF"}
-
-ROTATION_OPTIONS = ["Yok", "90° Saat Yönü", "90° Ters Yön", "180°", "Yatay Ayna", "Dikey Ayna"]
-WM_POSITIONS     = ["Sağ Alt", "Sol Alt", "Sağ Üst", "Sol Üst", "Merkez"]
-
-# ── Kalıcı ayarlar ─────────────────────────────────────────────────────────
+# ── Kalıcı ayarlar (palette'den önce tanımlanmalı) ────────────────────────
 SETTINGS_PATH = Path.home() / ".gorsel_donusturucu.json"
 HISTORY_PATH  = Path.home() / ".gorsel_donusturucu_history.json"
 
-DEFAULT_SETTINGS: dict = {
+DEFAULT_SETTINGS: dict[str, Any] = {
     "out_dir": str(Path.home() / "Dönüştürülen"),
     "format": "JPG", "quality": 85, "png_compress": 6,
     "resize": False, "width": "1920", "height": "1080", "keep_ratio": True,
@@ -122,6 +100,142 @@ def load_history() -> list:
     except Exception:
         return []
 
+# ── Renk paletleri ─────────────────────────────────────────────────────────
+_PALETTES = {
+    "dark": {
+        "BG":         "#0d1117",
+        "SURFACE":    "#13171f",
+        "CARD":       "#1c2132",
+        "ACCENT":     "#7c3aed",
+        "ACCENT_H":   "#6d28d9",
+        "TEXT":       "#e2e8f0",
+        "TEXT_DIM":   "#94a3b8",
+        "TEXT_MUTED": "#64748b",
+        "DANGER":     "#dc2626",
+        "BORDER":     "#2d3550",
+        "BTN_SECONDARY_BG":    "#1c2132",
+        "BTN_SECONDARY_HO":    "#252e48",
+        "BTN_DANGER_BG":       "#1f1520",
+        "BTN_DANGER_HO":       "#2d1b2e",
+        "BTN_DANGER_BORDER":   "#5b2333",
+        "SLIDER_BG":           "#2d3550",
+        "SIG_COLOR":           "#3d2f6b",
+    },
+    "light": {
+        "BG":         "#f0f4f8",
+        "SURFACE":    "#ffffff",
+        "CARD":       "#e8edf3",
+        "ACCENT":     "#7c3aed",
+        "ACCENT_H":   "#6d28d9",
+        "TEXT":       "#1e293b",
+        "TEXT_DIM":   "#475569",
+        "TEXT_MUTED": "#94a3b8",
+        "DANGER":     "#dc2626",
+        "BORDER":     "#cbd5e1",
+        "BTN_SECONDARY_BG":    "#e8edf3",
+        "BTN_SECONDARY_HO":    "#dde3ed",
+        "BTN_DANGER_BG":       "#fef2f2",
+        "BTN_DANGER_HO":       "#fee2e2",
+        "BTN_DANGER_BORDER":   "#fca5a5",
+        "SLIDER_BG":           "#cbd5e1",
+        "SIG_COLOR":           "#a78bfa",
+    },
+}
+
+def _load_palette(theme: str) -> dict:
+    key = "light" if theme == "light" else "dark"
+    return _PALETTES[key]
+
+# Başlangıçta ayarlardan temayı oku
+_startup_theme = load_settings().get("theme", "dark")
+_P = _load_palette(_startup_theme)
+
+BG         = _P["BG"]
+SURFACE    = _P["SURFACE"]
+CARD       = _P["CARD"]
+ACCENT     = _P["ACCENT"]
+ACCENT_H   = _P["ACCENT_H"]
+TEXT       = _P["TEXT"]
+TEXT_DIM   = _P["TEXT_DIM"]
+TEXT_MUTED = _P["TEXT_MUTED"]
+DANGER     = _P["DANGER"]
+BORDER     = _P["BORDER"]
+
+# ── Format tabloları ───────────────────────────────────────────────────────
+SUPPORTED_INPUT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif", ".avif"}
+if HEIC_SUPPORT:
+    SUPPORTED_INPUT |= {".heic", ".heif"}
+
+OUTPUT_FORMATS = ["JPG", "PNG", "WEBP", "BMP", "TIFF"]
+if AVIF_SUPPORT:
+    OUTPUT_FORMATS.append("AVIF")
+
+EXT_MAP = {"JPG": ".jpg", "PNG": ".png", "WEBP": ".webp", "BMP": ".bmp", "TIFF": ".tiff", "AVIF": ".avif"}
+PIL_MAP = {"JPG": "JPEG", "PNG": "PNG",  "WEBP": "WEBP",  "BMP": "BMP",  "TIFF": "TIFF",  "AVIF": "AVIF"}
+
+ROTATION_OPTIONS = ["Yok", "90° Saat Yönü", "90° Ters Yön", "180°", "Yatay Ayna", "Dikey Ayna"]
+WM_POSITIONS     = ["Sağ Alt", "Sol Alt", "Sağ Üst", "Sol Üst", "Merkez"]
+
+_THEME_LABELS  = ["🌙 Koyu", "☀️ Açık", "🖥 Sistem"]
+_THEME_VALUES  = {"🌙 Koyu": "dark", "☀️ Açık": "light", "🖥 Sistem": "system"}
+_THEME_RLABELS = {"dark": "🌙 Koyu", "light": "☀️ Açık", "system": "🖥 Sistem"}
+
+
+@dataclass
+class ConversionSettings:
+    """Bir dönüştürme işleminin tüm parametrelerini taşır."""
+
+    fmt: str
+    pil_fmt: str
+    out_ext: str
+    quality: int
+    png_compress: int
+    do_resize: bool
+    tw: int | None
+    th: int | None
+    keep_ratio: bool
+    rm_exif: bool
+    overwrite: bool
+    subfolder: bool
+    prefix: str
+    suffix: str
+    keepname: bool
+    do_num: bool
+    nstart: int
+    npad: int
+    rotation: str
+    brightness: int
+    contrast: int
+    saturation: int
+    wm_enabled: bool
+    wm_text: str
+    wm_opacity: int
+    wm_position: str
+    wm_size: int
+    max_size_bytes: int
+    workers: int
+    files: list[str] = field(default_factory=list)
+
+
+@dataclass
+class HistoryEntry:
+    """Tek bir dönüştürme oturumunun özeti."""
+
+    date: str
+    fmt: str
+    ok: int
+    skip: int
+    err: int
+    out_dir: str
+    total_in: int
+    total_out: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "date": self.date, "format": self.fmt,
+            "ok": self.ok, "skip": self.skip, "err": self.err,
+            "out_dir": self.out_dir, "total_in": self.total_in, "total_out": self.total_out,
+        }
 
 # ── Görüntü işleme pipeline ────────────────────────────────────────────────
 def apply_pipeline(img: Image.Image, *,
@@ -166,7 +280,7 @@ def apply_pipeline(img: Image.Image, *,
         draw = ImageDraw.Draw(overlay)
         try:
             font = ImageFont.truetype("arial.ttf", wm_size)
-        except Exception:
+        except (OSError, IOError):
             font = ImageFont.load_default()
         bbox = draw.textbbox((0, 0), wm_text, font=font)
         tw2, th2 = bbox[2] - bbox[0], bbox[3] - bbox[1]
@@ -228,8 +342,9 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ── Tema ────────────────────────────────────────────────────────────────
-    def _apply_theme(self, theme: str):
-        ctk.set_appearance_mode(theme)
+    @staticmethod
+    def _apply_theme(theme: str):
+        ctk.set_appearance_mode("light" if theme == "light" else "dark")
         ctk.set_default_color_theme("blue")
 
     # ── Pencere kapat ────────────────────────────────────────────────────────
@@ -304,6 +419,7 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
         self.overwrite_var.set(s["overwrite"]); self.subfolder_var.set(s["subfolder"])
         self.workers_var.set(s.get("workers", 4))
         self.theme_var.set(s["theme"])
+        self.theme_seg.set(_THEME_RLABELS.get(s["theme"], "🌙 Koyu"))
         self.brightness_var.set(s["brightness"])
         self.brightness_lbl.configure(text=f"{s['brightness']}%")
         self.contrast_var.set(s["contrast"])
@@ -443,37 +559,33 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
     def _build_right(self):
         outer = ctk.CTkFrame(self, fg_color=SURFACE, corner_radius=14)
         outer.grid(row=0, column=1, padx=(6, 14), pady=14, sticky="nsew")
-        outer.grid_rowconfigure(0, weight=1)
         outer.grid_columnconfigure(0, weight=1)
-
-        # Tema seçici — üst bar
-        theme_bar = ctk.CTkFrame(outer, fg_color="transparent")
-        theme_bar.grid(row=0, column=0, sticky="ew", padx=10, pady=(8, 0))
-        theme_bar.grid_columnconfigure(0, weight=1)
-
-        self.theme_var = tk.StringVar(value="dark")
-        for i, (label, val) in enumerate([("🌙 Koyu", "dark"), ("☀️ Açık", "light"), ("🖥 Sistem", "system")]):
-            ctk.CTkRadioButton(theme_bar, text=label, variable=self.theme_var, value=val,
-                               command=self._on_theme_change,
-                               fg_color=ACCENT, hover_color=ACCENT_H, text_color=TEXT_MUTED,
-                               font=ctk.CTkFont("Segoe UI", 10)
-                               ).grid(row=0, column=i, padx=6, sticky="w")
+        outer.grid_rowconfigure(0, weight=1)  # rp row
 
         self.rp = ctk.CTkScrollableFrame(outer, fg_color="transparent",
                                          scrollbar_button_color=ACCENT,
                                          scrollbar_button_hover_color=ACCENT_H)
-        self.rp.grid(row=1, column=0, padx=6, pady=(4, 2), sticky="nsew")
-        outer.grid_rowconfigure(1, weight=1)
+        self.rp.grid(row=0, column=0, padx=6, pady=(6, 0), sticky="nsew")
         self.rp.grid_columnconfigure(0, weight=1)
 
         self._build_settings()
 
+        # Footer: tema seçici + imza
         sig = ctk.CTkFrame(outer, fg_color="transparent")
-        sig.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 8))
-        sig.grid_columnconfigure(0, weight=1)
+        sig.grid(row=1, column=0, sticky="ew", padx=10, pady=(2, 8))
+        sig.grid_columnconfigure(1, weight=1)
+
+        self.theme_var = tk.StringVar(value="dark")
+        self.theme_seg = ctk.CTkSegmentedButton(
+            sig, values=_THEME_LABELS, command=self._on_theme_change,
+            fg_color=CARD, selected_color=ACCENT, selected_hover_color=ACCENT_H,
+            unselected_color=CARD, unselected_hover_color=BORDER,
+            text_color=TEXT, font=ctk.CTkFont("Segoe UI", 9), height=24,
+        )
+        self.theme_seg.grid(row=0, column=0, sticky="w")
         ctk.CTkLabel(sig, text="⚔  Lord Bener Ç.",
                      font=ctk.CTkFont("Segoe UI", 10, slant="italic"),
-                     text_color="#3d2f6b", anchor="e").grid(row=0, column=0, sticky="e")
+                     text_color="#3d2f6b", anchor="e").grid(row=0, column=1, sticky="e")
 
     def _card(self, row, padtop=4):
         f = ctk.CTkFrame(self.rp, fg_color=CARD, corner_radius=10)
@@ -484,11 +596,11 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
     def _sect(self, parent, text, row=0):
         ctk.CTkLabel(parent, text=text, font=ctk.CTkFont("Segoe UI", 9, weight="bold"),
                      text_color=TEXT_MUTED).grid(row=row, column=0,
-                                                  sticky="w", padx=12, pady=(10, 6))
+                                                  sticky="w", padx=12, pady=(6, 3))
 
     def _slider_row(self, parent, row, label, var, lbl_ref_name, from_, to, steps, fmt="%d%%"):
         f = ctk.CTkFrame(parent, fg_color="transparent")
-        f.grid(row=row, column=0, sticky="ew", padx=10, pady=2)
+        f.grid(row=row, column=0, sticky="ew", padx=10, pady=1)
         f.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(f, text=label, width=88, font=ctk.CTkFont("Segoe UI", 11),
                      text_color=TEXT_DIM, anchor="w").grid(row=0, column=0, sticky="w")
@@ -538,40 +650,16 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
         # ── Kalite ─────────────────────────────────────────────────────────
         self.q_card = self._card(row); row += 1
         self._sect(self.q_card, "🎚  KALİTE  (JPG / WEBP / AVIF)")
-        qf = ctk.CTkFrame(self.q_card, fg_color="transparent")
-        qf.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
-        qf.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(qf, text="Kalite:", font=ctk.CTkFont("Segoe UI", 11),
-                     text_color=TEXT_DIM).grid(row=0, column=0, sticky="w")
         self.q_var = tk.IntVar(value=85)
-        self.q_lbl = ctk.CTkLabel(qf, text="85%", width=42,
-                                   font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
-                                   text_color=ACCENT)
-        self.q_lbl.grid(row=0, column=2)
-        ctk.CTkSlider(qf, from_=1, to=100, variable=self.q_var, number_of_steps=99,
-                      height=16, button_color=ACCENT, button_hover_color=ACCENT_H,
-                      progress_color=ACCENT, fg_color="#2d3550",
-                      command=lambda v: self.q_lbl.configure(text=f"{int(float(v))}%"),
-                      ).grid(row=0, column=1, sticky="ew", padx=8)
+        self._slider_row(self.q_card, 1, "Kalite:", self.q_var, "q_lbl", 1, 100, 99)
+        ctk.CTkFrame(self.q_card, height=4, fg_color="transparent").grid(row=2, column=0)
 
         # ── PNG Sıkıştırma ─────────────────────────────────────────────────
         self.png_card = self._card(row); row += 1
         self._sect(self.png_card, "🗜  PNG SIKIŞTIRILMA  (0 = hız · 9 = küçük dosya)")
-        pngf = ctk.CTkFrame(self.png_card, fg_color="transparent")
-        pngf.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
-        pngf.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(pngf, text="Seviye:", font=ctk.CTkFont("Segoe UI", 11),
-                     text_color=TEXT_DIM).grid(row=0, column=0, sticky="w")
         self.png_compress_var = tk.IntVar(value=6)
-        self.png_compress_lbl = ctk.CTkLabel(pngf, text="6", width=28,
-                                              font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
-                                              text_color=ACCENT)
-        self.png_compress_lbl.grid(row=0, column=2)
-        ctk.CTkSlider(pngf, from_=0, to=9, variable=self.png_compress_var, number_of_steps=9,
-                      height=16, button_color=ACCENT, button_hover_color=ACCENT_H,
-                      progress_color=ACCENT, fg_color="#2d3550",
-                      command=lambda v: self.png_compress_lbl.configure(text=str(int(float(v)))),
-                      ).grid(row=0, column=1, sticky="ew", padx=8)
+        self._slider_row(self.png_card, 1, "Seviye:", self.png_compress_var, "png_compress_lbl", 0, 9, 9, "%d")
+        ctk.CTkFrame(self.png_card, height=4, fg_color="transparent").grid(row=2, column=0)
 
         # ── Boyutlandırma ──────────────────────────────────────────────────
         c = self._card(row); row += 1
@@ -629,7 +717,7 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
         self._slider_row(c, 1, "Parlaklık:",  self.brightness_var, "brightness_lbl", 10, 200, 190)
         self._slider_row(c, 2, "Kontrast:",   self.contrast_var,   "contrast_lbl",   10, 200, 190)
         self._slider_row(c, 3, "Doygunluk:",  self.saturation_var, "saturation_lbl", 0,  200, 200)
-        ctk.CTkFrame(c, height=6, fg_color="transparent").grid(row=4, column=0)
+        ctk.CTkFrame(c, height=4, fg_color="transparent").grid(row=4, column=0)
 
         # ── Döndürme ───────────────────────────────────────────────────────
         c = self._card(row); row += 1
@@ -810,8 +898,12 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
         self.cancel_btn.grid(row=row, column=0, padx=2, pady=(0, 10), sticky="ew")
 
     # ─────────────────────────── Olaylar ───────────────────────────────────
-    def _on_theme_change(self):
-        self._apply_theme(self.theme_var.get())
+    def _on_theme_change(self, label: str = ""):
+        if label:
+            self.theme_var.set(_THEME_VALUES.get(label, "dark"))
+        self._save_settings_from_ui()
+        self.destroy()
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
     def _on_format(self):
         fmt = self.fmt_var.get()
@@ -1110,7 +1202,7 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
             tmp_path = tf.name
 
-        kw: dict = {}
+        kw: dict[str, Any] = {}
         if pil_fmt == "JPEG":
             kw["quality"] = self.q_var.get(); kw["optimize"] = True
         elif pil_fmt == "WEBP":
@@ -1140,49 +1232,52 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
         self.cancel_flag = True
         self.log("⏹ İptal isteği gönderildi…")
 
-    def _do_convert(self, out_dir: str):
-        fmt          = self.fmt_var.get()
-        quality      = self.q_var.get()
-        png_compress = self.png_compress_var.get()
-        do_resize    = self.resize_var.get()
-        keep_ratio   = self.ratio_var.get()
-        rm_exif      = self.exif_var.get()
-        overwrite    = self.overwrite_var.get()
-        subfolder    = self.subfolder_var.get()
-        prefix       = self.pfx_var.get()
-        suffix       = self.sfx_var.get()
-        keepname     = self.keepname_var.get()
-        do_num       = self.num_var.get()
-        out_ext      = EXT_MAP[fmt]
-        pil_fmt      = PIL_MAP[fmt]
-        workers      = max(1, self.workers_var.get())
-        rotation     = self.rotation_var.get()
-        brightness   = self.brightness_var.get()
-        contrast     = self.contrast_var.get()
-        saturation   = self.saturation_var.get()
-        wm_enabled   = self.wm_enabled_var.get()
-        wm_text      = self.wm_text_var.get()
-        wm_opacity   = self.wm_opacity_var.get()
-        wm_position  = self.wm_position_var.get()
-        wm_size      = self.wm_size_var.get()
-        max_size_on  = self.max_size_var.get() and pil_fmt in ("JPEG", "WEBP")
-        files_snap   = list(self.files)
-
+    def _build_settings_snapshot(self, out_dir: str) -> ConversionSettings | None:
+        """UI'dan ConversionSettings oluşturur; hata varsa None döner."""
+        fmt     = self.fmt_var.get()
+        pil_fmt = PIL_MAP[fmt]
+        do_resize   = self.resize_var.get()
+        max_size_on = self.max_size_var.get() and pil_fmt in ("JPEG", "WEBP")
         try:
-            nstart       = int(self.nstart_var.get())
-            npad         = int(self.npad_var.get())
             tw           = int(self.w_var.get()) if do_resize else None
             th           = int(self.h_var.get()) if do_resize else None
+            nstart       = int(self.nstart_var.get())
+            npad         = int(self.npad_var.get())
             max_size_b   = int(self.max_size_kb_var.get()) * 1024 if max_size_on else 0
         except ValueError:
+            return None
+        return ConversionSettings(
+            fmt=fmt, pil_fmt=pil_fmt, out_ext=EXT_MAP[fmt],
+            quality=self.q_var.get(), png_compress=self.png_compress_var.get(),
+            do_resize=do_resize, tw=tw, th=th, keep_ratio=self.ratio_var.get(),
+            rm_exif=self.exif_var.get(), overwrite=self.overwrite_var.get(),
+            subfolder=self.subfolder_var.get(),
+            prefix=self.pfx_var.get(), suffix=self.sfx_var.get(),
+            keepname=self.keepname_var.get(), do_num=self.num_var.get(),
+            nstart=nstart, npad=npad,
+            rotation=self.rotation_var.get(),
+            brightness=self.brightness_var.get(), contrast=self.contrast_var.get(),
+            saturation=self.saturation_var.get(),
+            wm_enabled=self.wm_enabled_var.get(), wm_text=self.wm_text_var.get(),
+            wm_opacity=self.wm_opacity_var.get(), wm_position=self.wm_position_var.get(),
+            wm_size=self.wm_size_var.get(),
+            max_size_bytes=max_size_b,
+            workers=max(1, self.workers_var.get()),
+            files=list(self.files),
+        )
+
+    def _do_convert(self, out_dir: str) -> None:
+        s = self._build_settings_snapshot(out_dir)
+        if s is None:
             self.log("❌ Hata: geçersiz sayısal değer!")
             self.after(0, self._finish)
             return
 
-        total    = len(files_snap)
-        lock     = threading.Lock()
-        counters = {"ok": 0, "err": 0, "skip": 0, "done": 0,
-                    "total_in": 0, "total_out": 0}
+        files_snap = s.files
+        total      = len(files_snap)
+        lock       = threading.Lock()
+        counters: dict[str, int] = {"ok": 0, "err": 0, "skip": 0, "done": 0,
+                                     "total_in": 0, "total_out": 0}
 
         def convert_one(args: tuple):
             i, fp = args
@@ -1190,19 +1285,19 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
                 return
             try:
                 in_size  = Path(fp).stat().st_size
-                dest_dir = Path(out_dir) / Path(fp).parent.name if subfolder else Path(out_dir)
+                dest_dir = Path(out_dir) / Path(fp).parent.name if s.subfolder else Path(out_dir)
                 dest_dir.mkdir(parents=True, exist_ok=True)
 
                 stem = Path(fp).stem
-                if do_num:
-                    name = f"{prefix}{str(nstart + i).zfill(npad)}{suffix}{out_ext}"
-                elif keepname:
-                    name = f"{prefix}{stem}{suffix}{out_ext}"
+                if s.do_num:
+                    name = f"{s.prefix}{str(s.nstart + i).zfill(s.npad)}{s.suffix}{s.out_ext}"
+                elif s.keepname:
+                    name = f"{s.prefix}{stem}{s.suffix}{s.out_ext}"
                 else:
-                    name = f"{prefix}{i + 1:0{len(str(total))}}{suffix}{out_ext}"
+                    name = f"{s.prefix}{i + 1:0{len(str(total))}}{s.suffix}{s.out_ext}"
 
                 out_path = dest_dir / name
-                if out_path.exists() and not overwrite:
+                if out_path.exists() and not s.overwrite:
                     with lock:
                         counters["skip"] += 1
                         counters["done"] += 1
@@ -1211,43 +1306,43 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
                     return
 
                 img = Image.open(fp)
-                img = convert_mode(img, pil_fmt)
+                img = convert_mode(img, s.pil_fmt)
                 img = apply_pipeline(
                     img,
-                    do_resize=do_resize, tw=tw, th=th, keep_ratio=keep_ratio,
-                    rotation=rotation, brightness=brightness,
-                    contrast=contrast, saturation=saturation,
-                    wm_enabled=wm_enabled, wm_text=wm_text,
-                    wm_opacity=wm_opacity, wm_position=wm_position, wm_size=wm_size,
+                    do_resize=s.do_resize, tw=s.tw, th=s.th, keep_ratio=s.keep_ratio,
+                    rotation=s.rotation, brightness=s.brightness,
+                    contrast=s.contrast, saturation=s.saturation,
+                    wm_enabled=s.wm_enabled, wm_text=s.wm_text,
+                    wm_opacity=s.wm_opacity, wm_position=s.wm_position, wm_size=s.wm_size,
                 )
-                img = convert_mode(img, pil_fmt)  # watermark RGBA → RGB
+                img = convert_mode(img, s.pil_fmt)  # watermark RGBA → RGB
 
-                kw: dict = {}
-                if pil_fmt == "JPEG":
-                    kw["quality"] = quality; kw["optimize"] = True
-                    if rm_exif:
+                kw: dict[str, Any] = {}
+                if s.pil_fmt == "JPEG":
+                    kw["quality"] = s.quality; kw["optimize"] = True
+                    if s.rm_exif:
                         kw["exif"] = b""
-                elif pil_fmt == "WEBP":
-                    kw["quality"] = quality
-                    if rm_exif:
+                elif s.pil_fmt == "WEBP":
+                    kw["quality"] = s.quality
+                    if s.rm_exif:
                         kw["exif"] = b""
-                elif pil_fmt == "AVIF":
-                    kw["quality"] = quality
-                elif pil_fmt == "PNG":
-                    kw["optimize"] = True; kw["compress_level"] = png_compress
+                elif s.pil_fmt == "AVIF":
+                    kw["quality"] = s.quality
+                elif s.pil_fmt == "PNG":
+                    kw["optimize"] = True; kw["compress_level"] = s.png_compress
 
                 # Maksimum boyut kontrolü (JPEG / WEBP)
-                if max_size_on and max_size_b > 0:
-                    q = kw.get("quality", quality)
+                if s.max_size_bytes > 0:
+                    q = kw.get("quality", s.quality)
                     while q > 10:
                         buf = io.BytesIO()
-                        img.save(buf, pil_fmt, **{**kw, "quality": q})
-                        if buf.tell() <= max_size_b:
+                        img.save(buf, s.pil_fmt, **{**kw, "quality": q})
+                        if buf.tell() <= s.max_size_bytes:
                             break
                         q -= 5
                     kw["quality"] = q
 
-                img.save(out_path, pil_fmt, **kw)
+                img.save(out_path, s.pil_fmt, **kw)
                 out_size = out_path.stat().st_size
                 with lock:
                     counters["ok"]        += 1
@@ -1264,7 +1359,7 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
 
             self._update_progress(counters["done"], total)
 
-        with ThreadPoolExecutor(max_workers=workers) as ex:
+        with ThreadPoolExecutor(max_workers=s.workers) as ex:
             ex.map(convert_one, enumerate(files_snap))
 
         ok        = counters["ok"]
@@ -1285,11 +1380,11 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
                      f"  ({sign} {pct_diff:.1f}%  /  {self._sz(abs(diff))} tasarruf)")
 
         # Geçmişe kaydet
-        append_history({
-            "date": datetime.now().isoformat(),
-            "format": fmt, "ok": ok, "skip": skip, "err": err,
-            "out_dir": out_dir, "total_in": total_in, "total_out": total_out,
-        })
+        append_history(HistoryEntry(
+            date=datetime.now().isoformat(),
+            fmt=s.fmt, ok=ok, skip=skip, err=err,
+            out_dir=out_dir, total_in=total_in, total_out=total_out,
+        ).to_dict())
 
         final_pct = 1.0 if not self.cancel_flag else counters["done"] / total
         self.after(0, self.prog_bar.set, final_pct)
