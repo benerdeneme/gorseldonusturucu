@@ -1,6 +1,9 @@
+import io
+import json
 import os
 import threading
 import tkinter as tk
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -12,23 +15,86 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
+# ── Opsiyonel HEIC desteği ─────────────────────────────────────────────────
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+    HEIC_SUPPORT = True
+except ImportError:
+    HEIC_SUPPORT = False
+
+# ── AVIF desteği kontrolü ──────────────────────────────────────────────────
+def _check_avif() -> bool:
+    try:
+        Image.new("RGB", (1, 1)).save(io.BytesIO(), "AVIF")
+        return True
+    except Exception:
+        return False
+
+AVIF_SUPPORT = _check_avif()
+
 # ── Obsidian Renk Paleti ───────────────────────────────────────────────────
 BG         = "#0d1117"
 SURFACE    = "#13171f"
 CARD       = "#1c2132"
 ACCENT     = "#7c3aed"
 ACCENT_H   = "#6d28d9"
-ACCENT2    = "#4f46e5"
 TEXT       = "#e2e8f0"
 TEXT_DIM   = "#94a3b8"
 TEXT_MUTED = "#64748b"
-SUCCESS    = "#10b981"
 DANGER     = "#dc2626"
 BORDER     = "#2d3550"
 
-SUPPORTED_FORMATS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif"}
-EXT_MAP = {"JPG": ".jpg", "PNG": ".png", "WEBP": ".webp"}
-PIL_MAP = {"JPG": "JPEG", "PNG": "PNG", "WEBP": "WEBP"}
+# ── Format tabloları ───────────────────────────────────────────────────────
+SUPPORTED_INPUT = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif", ".avif"}
+if HEIC_SUPPORT:
+    SUPPORTED_INPUT |= {".heic", ".heif"}
+
+OUTPUT_FORMATS = ["JPG", "PNG", "WEBP", "BMP", "TIFF"]
+if AVIF_SUPPORT:
+    OUTPUT_FORMATS.append("AVIF")
+
+EXT_MAP = {"JPG": ".jpg", "PNG": ".png", "WEBP": ".webp", "BMP": ".bmp", "TIFF": ".tiff", "AVIF": ".avif"}
+PIL_MAP = {"JPG": "JPEG", "PNG": "PNG",  "WEBP": "WEBP",  "BMP": "BMP",  "TIFF": "TIFF",  "AVIF": "AVIF"}
+
+# ── Ayar kalıcılığı ────────────────────────────────────────────────────────
+SETTINGS_PATH = Path.home() / ".gorsel_donusturucu.json"
+
+DEFAULT_SETTINGS: dict = {
+    "out_dir": str(Path.home() / "Dönüştürülen"),
+    "format": "JPG",
+    "quality": 85,
+    "png_compress": 6,
+    "resize": False,
+    "width": "1920",
+    "height": "1080",
+    "keep_ratio": True,
+    "prefix": "",
+    "suffix": "",
+    "keepname": True,
+    "numbering": False,
+    "nstart": "1",
+    "npad": "3",
+    "recursive": True,
+    "rm_exif": False,
+    "overwrite": False,
+    "subfolder": False,
+    "workers": 4,
+}
+
+def load_settings() -> dict:
+    try:
+        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+            return {**DEFAULT_SETTINGS, **json.load(f)}
+    except Exception:
+        return DEFAULT_SETTINGS.copy()
+
+def save_settings(data: dict) -> None:
+    try:
+        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 
 class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
@@ -44,7 +110,65 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
         self._ratio: float = 1080.0 / 1920.0
         self._ratio_lock: bool = False
         self._preview_ref = None
+        self._settings = load_settings()
         self._build_ui()
+        self._load_settings_to_ui()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ── Ayar kaydet / yükle ─────────────────────────────────────────────────
+    def _on_close(self):
+        self._save_settings_from_ui()
+        self.destroy()
+
+    def _save_settings_from_ui(self):
+        save_settings({
+            "out_dir":      self.out_var.get(),
+            "format":       self.fmt_var.get(),
+            "quality":      self.q_var.get(),
+            "png_compress": self.png_compress_var.get(),
+            "resize":       self.resize_var.get(),
+            "width":        self.w_var.get(),
+            "height":       self.h_var.get(),
+            "keep_ratio":   self.ratio_var.get(),
+            "prefix":       self.pfx_var.get(),
+            "suffix":       self.sfx_var.get(),
+            "keepname":     self.keepname_var.get(),
+            "numbering":    self.num_var.get(),
+            "nstart":       self.nstart_var.get(),
+            "npad":         self.npad_var.get(),
+            "recursive":    self.recursive_var.get(),
+            "rm_exif":      self.exif_var.get(),
+            "overwrite":    self.overwrite_var.get(),
+            "subfolder":    self.subfolder_var.get(),
+            "workers":      self.workers_var.get(),
+        })
+
+    def _load_settings_to_ui(self):
+        s = self._settings
+        self.out_var.set(s["out_dir"])
+        self.fmt_var.set(s["format"] if s["format"] in OUTPUT_FORMATS else "JPG")
+        self.q_var.set(s["quality"])
+        self.q_lbl.configure(text=f"{s['quality']}%")
+        self.png_compress_var.set(s["png_compress"])
+        self.png_compress_lbl.configure(text=str(s["png_compress"]))
+        self.resize_var.set(s["resize"])
+        self.w_var.set(s["width"])
+        self.h_var.set(s["height"])
+        self.ratio_var.set(s["keep_ratio"])
+        self.pfx_var.set(s["prefix"])
+        self.sfx_var.set(s["suffix"])
+        self.keepname_var.set(s["keepname"])
+        self.num_var.set(s["numbering"])
+        self.nstart_var.set(s["nstart"])
+        self.npad_var.set(s["npad"])
+        self.recursive_var.set(s["recursive"])
+        self.exif_var.set(s["rm_exif"])
+        self.overwrite_var.set(s["overwrite"])
+        self.subfolder_var.set(s["subfolder"])
+        self.workers_var.set(s.get("workers", 4))
+        self._on_format()
+        self._on_resize()
+        self._on_num()
 
     # ─────────────────────────── UI ────────────────────────────────────────
     def _build_ui(self):
@@ -53,6 +177,9 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
         self.grid_rowconfigure(0, weight=1)
         self._build_left()
         self._build_right()
+        # Drag & drop tüm pencereye
+        self.drop_target_register(DND_FILES)
+        self.dnd_bind("<<Drop>>", self._on_drop)
 
     # ── Sol Panel ──────────────────────────────────────────────────────────
     def _build_left(self):
@@ -61,9 +188,11 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
         left.grid_rowconfigure(2, weight=1)
         left.grid_columnconfigure(0, weight=1)
 
-        # count_lbl (gizli, _update_count için)
-        self.count_lbl = ctk.CTkLabel(left, text="0 dosya",
-                                      font=ctk.CTkFont("Segoe UI", 11), text_color=TEXT_MUTED)
+        # HEIC uyarısı
+        if not HEIC_SUPPORT:
+            ctk.CTkLabel(left, text="⚠ HEIC desteği için: pip install pillow-heif",
+                         font=ctk.CTkFont("Segoe UI", 9), text_color="#f59e0b",
+                         ).grid(row=0, column=0, sticky="w", padx=12, pady=(6, 0))
 
         # Toolbar
         tb = ctk.CTkFrame(left, fg_color="transparent")
@@ -82,6 +211,11 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
                       border_width=1, border_color="#5b2333", text_color=DANGER,
                       command=self.clear_files, **_btn).pack(side="left", padx=4)
 
+        # Dosya sayacı — toolbar'ın sağında
+        self.count_lbl = ctk.CTkLabel(tb, text="0 dosya",
+                                      font=ctk.CTkFont("Segoe UI", 11), text_color=TEXT_MUTED)
+        self.count_lbl.pack(side="right", padx=8)
+
         # Dosya listesi
         lf = ctk.CTkFrame(left, fg_color=CARD, corner_radius=10)
         lf.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=10, pady=2)
@@ -97,8 +231,6 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
         self.listbox.bind("<Delete>", self._delete_selected)
         self.listbox.bind("<Button-3>", self._right_click)
         self.listbox.bind("<<ListboxSelect>>", self._on_select)
-
-        # Drag & drop
         self.listbox.drop_target_register(DND_FILES)
         self.listbox.dnd_bind("<<Drop>>", self._on_drop)
 
@@ -169,7 +301,6 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
         outer.grid_rowconfigure(0, weight=1)
         outer.grid_columnconfigure(0, weight=1)
 
-        # Scrollable alan
         self.rp = ctk.CTkScrollableFrame(outer, fg_color="transparent",
                                          scrollbar_button_color=ACCENT,
                                          scrollbar_button_hover_color=ACCENT_H)
@@ -178,16 +309,13 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
 
         self._build_settings()
 
-        # İmza
         sig = ctk.CTkFrame(outer, fg_color="transparent")
         sig.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 8))
         sig.grid_columnconfigure(0, weight=1)
-
         ctk.CTkLabel(
             sig, text="⚔  Lord Bener Ç.",
             font=ctk.CTkFont("Segoe UI", 10, slant="italic"),
-            text_color="#3d2f6b",
-            anchor="e",
+            text_color="#3d2f6b", anchor="e",
         ).grid(row=0, column=0, sticky="e")
 
     def _card(self, row, padtop=4):
@@ -227,15 +355,15 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
         self.fmt_var = ctk.StringVar(value="JPG")
         ff = ctk.CTkFrame(c1, fg_color="transparent")
         ff.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
-        for i, fmt in enumerate(["JPG", "PNG", "WEBP"]):
+        for i, fmt in enumerate(OUTPUT_FORMATS):
             ctk.CTkRadioButton(ff, text=fmt, variable=self.fmt_var, value=fmt,
                                command=self._on_format,
                                fg_color=ACCENT, hover_color=ACCENT_H,
-                               text_color=TEXT).grid(row=0, column=i, padx=14)
+                               text_color=TEXT).grid(row=0, column=i, padx=10)
 
-        # ── Kalite (PNG seçilince kaybolur) ────────────────────────────────
+        # ── Kalite — JPG / WEBP / AVIF ─────────────────────────────────────
         self.q_card = self._card(2)
-        self._sect(self.q_card, "🎚  KALİTE")
+        self._sect(self.q_card, "🎚  KALİTE  (JPG / WEBP / AVIF)")
         qf = ctk.CTkFrame(self.q_card, fg_color="transparent")
         qf.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
         qf.grid_columnconfigure(1, weight=1)
@@ -252,17 +380,35 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
                       command=lambda v: self.q_lbl.configure(text=f"{int(float(v))}%"),
                       ).grid(row=0, column=1, sticky="ew", padx=8)
 
+        # ── PNG Sıkıştırma ─────────────────────────────────────────────────
+        self.png_card = self._card(3)
+        self._sect(self.png_card, "🗜  PNG SIKIŞTIRILMA SEVİYESİ  (0 = hız · 9 = küçük dosya)")
+        pngf = ctk.CTkFrame(self.png_card, fg_color="transparent")
+        pngf.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+        pngf.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(pngf, text="Seviye:", font=ctk.CTkFont("Segoe UI", 11),
+                     text_color=TEXT_DIM).grid(row=0, column=0, sticky="w")
+        self.png_compress_var = tk.IntVar(value=6)
+        self.png_compress_lbl = ctk.CTkLabel(pngf, text="6", width=28,
+                                              font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                                              text_color=ACCENT)
+        self.png_compress_lbl.grid(row=0, column=2)
+        ctk.CTkSlider(pngf, from_=0, to=9, variable=self.png_compress_var, number_of_steps=9,
+                      height=16, button_color=ACCENT, button_hover_color=ACCENT_H,
+                      progress_color=ACCENT, fg_color="#2d3550",
+                      command=lambda v: self.png_compress_lbl.configure(text=str(int(float(v)))),
+                      ).grid(row=0, column=1, sticky="ew", padx=8)
+
         # ── Boyutlandırma ──────────────────────────────────────────────────
-        c3 = self._card(3)
-        self._sect(c3, "📐  YENİDEN BOYUTLANDIRMA")
+        c4 = self._card(4)
+        self._sect(c4, "📐  YENİDEN BOYUTLANDIRMA")
         self.resize_var = tk.BooleanVar(value=False)
-        ctk.CTkCheckBox(c3, text="Yeniden boyutlandır", variable=self.resize_var,
+        ctk.CTkCheckBox(c4, text="Yeniden boyutlandır", variable=self.resize_var,
                         command=self._on_resize, fg_color=ACCENT, hover_color=ACCENT_H,
                         text_color=TEXT).grid(row=1, column=0, sticky="w", padx=12, pady=(0, 6))
 
-        self.rs_frame = ctk.CTkFrame(c3, fg_color="transparent")
+        self.rs_frame = ctk.CTkFrame(c4, fg_color="transparent")
         self.rs_frame.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 4))
-        self.rs_frame.grid_columnconfigure(1, weight=0)
 
         ctk.CTkLabel(self.rs_frame, text="Genişlik:", width=74,
                      font=ctk.CTkFont("Segoe UI", 11), text_color=TEXT_DIM,
@@ -284,7 +430,7 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
                                     fg_color=BG, border_color=BORDER, text_color=TEXT)
         self.h_entry.grid(row=1, column=1, sticky="w", padx=(4, 0), pady=3)
         ctk.CTkLabel(self.rs_frame, text="px",
-                     font=ctk.CTkFont("Segoe UI", 11), text_color=TEXT_MUTED
+                     font=ctk.CTkFont("Segoe UI", 11), text_color=TEXT_MUTED,
                      ).grid(row=1, column=2, padx=(4, 0))
 
         self.w_var.trace_add("write", self._on_w_changed)
@@ -298,13 +444,13 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
             font=ctk.CTkFont("Segoe UI", 11),
         )
         self.ratio_cb.grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 4))
-        ctk.CTkFrame(c3, height=4, fg_color="transparent").grid(row=3, column=0)
+        ctk.CTkFrame(c4, height=4, fg_color="transparent").grid(row=3, column=0)
         self._on_resize()
 
         # ── Dosya Adı ──────────────────────────────────────────────────────
-        c4 = self._card(4)
-        self._sect(c4, "✏  DOSYA ADI")
-        nf = ctk.CTkFrame(c4, fg_color="transparent")
+        c5 = self._card(5)
+        self._sect(c5, "✏  DOSYA ADI")
+        nf = ctk.CTkFrame(c5, fg_color="transparent")
         nf.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
         nf.grid_columnconfigure(1, weight=1)
 
@@ -360,8 +506,8 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
         self._on_num()
 
         # ── Ek Seçenekler ──────────────────────────────────────────────────
-        c5 = self._card(5)
-        self._sect(c5, "🔧  EK SEÇENEKLER")
+        c6 = self._card(6)
+        self._sect(c6, "🔧  EK SEÇENEKLER")
         self.recursive_var = tk.BooleanVar(value=True)
         self.exif_var      = tk.BooleanVar(value=False)
         self.overwrite_var = tk.BooleanVar(value=False)
@@ -373,13 +519,28 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
             ("Alt klasör yapısını çıktıda koru",      self.subfolder_var),
         ]
         for i, (t, v) in enumerate(opts):
-            ctk.CTkCheckBox(c5, text=t, variable=v,
+            ctk.CTkCheckBox(c6, text=t, variable=v,
                             fg_color=ACCENT, hover_color=ACCENT_H, text_color=TEXT,
                             font=ctk.CTkFont("Segoe UI", 11),
                             ).grid(row=1 + i, column=0, sticky="w", padx=12, pady=3)
-        ctk.CTkFrame(c5, height=8, fg_color="transparent").grid(row=10, column=0)
 
-        # ── Dönüştür Butonu ────────────────────────────────────────────────
+        # Paralel iş parçacığı sayısı
+        wf = ctk.CTkFrame(c6, fg_color="transparent")
+        wf.grid(row=6, column=0, sticky="w", padx=12, pady=(6, 10))
+        ctk.CTkLabel(wf, text="Paralel iş parçacığı:",
+                     font=ctk.CTkFont("Segoe UI", 11), text_color=TEXT_DIM).pack(side="left")
+        self.workers_var = tk.IntVar(value=4)
+        workers_lbl = ctk.CTkLabel(wf, text="4", width=24,
+                                   font=ctk.CTkFont("Segoe UI", 11, weight="bold"),
+                                   text_color=ACCENT)
+        ctk.CTkSlider(wf, from_=1, to=16, variable=self.workers_var, number_of_steps=15,
+                      width=100, height=14, button_color=ACCENT, button_hover_color=ACCENT_H,
+                      progress_color=ACCENT, fg_color="#2d3550",
+                      command=lambda v: workers_lbl.configure(text=str(int(float(v)))),
+                      ).pack(side="left", padx=(8, 4))
+        workers_lbl.pack(side="left")
+
+        # ── Dönüştür / Durdur ──────────────────────────────────────────────
         self.conv_btn = ctk.CTkButton(
             self.rp, text="🚀  Dönüştür",
             height=52, corner_radius=12,
@@ -387,7 +548,7 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
             fg_color=ACCENT, hover_color=ACCENT_H,
             command=self.start_conversion,
         )
-        self.conv_btn.grid(row=6, column=0, padx=2, pady=(12, 4), sticky="ew")
+        self.conv_btn.grid(row=7, column=0, padx=2, pady=(12, 4), sticky="ew")
 
         self.cancel_btn = ctk.CTkButton(
             self.rp, text="⏹  Durdur",
@@ -397,13 +558,19 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
             border_width=1, border_color="#5b2333", text_color=DANGER,
             command=self.cancel_conversion, state="disabled",
         )
-        self.cancel_btn.grid(row=7, column=0, padx=2, pady=(0, 10), sticky="ew")
+        self.cancel_btn.grid(row=8, column=0, padx=2, pady=(0, 10), sticky="ew")
 
     # ─────────────────────────── Olaylar ───────────────────────────────────
     def _on_format(self):
-        if self.fmt_var.get() == "PNG":
+        fmt = self.fmt_var.get()
+        if fmt == "PNG":
             self.q_card.grid_remove()
-        else:
+            self.png_card.grid(row=3, column=0, sticky="ew", padx=2, pady=(4, 2))
+        elif fmt in ("BMP", "TIFF"):
+            self.q_card.grid_remove()
+            self.png_card.grid_remove()
+        else:  # JPG, WEBP, AVIF
+            self.png_card.grid_remove()
             self.q_card.grid(row=2, column=0, sticky="ew", padx=2, pady=(4, 2))
         self.update_idletasks()
 
@@ -472,7 +639,7 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
             ctk_img = ctk.CTkImage(thumb, size=thumb.size)
             self.preview_img_lbl.configure(image=ctk_img, text="")
             self._preview_ref = ctk_img
-            sz = self._sz(Path(fp))
+            sz = self._sz(Path(fp).stat().st_size)
             fmt = Path(fp).suffix.upper().lstrip(".")
             self.preview_info_lbl.configure(
                 text=f"{Path(fp).name}\n\n📐  {orig_w} × {orig_h} px\n💾  {sz}\n🏷  {fmt}"
@@ -489,7 +656,7 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
         pattern = "**/*" if self.recursive_var.get() else "*"
         added = 0
         p = Path(folder)
-        for ext in SUPPORTED_FORMATS:
+        for ext in SUPPORTED_INPUT:
             for f in list(p.glob(pattern + ext)) + list(p.glob(pattern + ext.upper())):
                 if str(f) not in self.files:
                     self.files.append(str(f))
@@ -499,10 +666,12 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
         self.log(f"📂 {folder}  →  {added} dosya eklendi")
 
     def add_files(self):
+        ft = "*.jpg *.jpeg *.png *.webp *.bmp *.gif *.tiff *.tif *.avif"
+        if HEIC_SUPPORT:
+            ft += " *.heic *.heif"
         files = filedialog.askopenfilenames(
             title="Dosya Seç",
-            filetypes=[("Resim", "*.jpg *.jpeg *.png *.webp *.bmp *.gif *.tiff *.tif"),
-                       ("Tümü", "*.*")])
+            filetypes=[("Resim", ft), ("Tümü", "*.*")])
         added = 0
         for f in files:
             if f not in self.files:
@@ -544,13 +713,13 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
         for fp in files:
             p = Path(fp)
             if p.is_dir():
-                for ext in SUPPORTED_FORMATS:
+                for ext in SUPPORTED_INPUT:
                     for f in list(p.rglob("*" + ext)) + list(p.rglob("*" + ext.upper())):
                         if str(f) not in self.files:
                             self.files.append(str(f))
                             self.listbox.insert(tk.END, f.name)
                             added += 1
-            elif p.suffix.lower() in SUPPORTED_FORMATS:
+            elif p.suffix.lower() in SUPPORTED_INPUT:
                 if str(p) not in self.files:
                     self.files.append(str(p))
                     self.listbox.insert(tk.END, p.name)
@@ -613,18 +782,22 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
         self.log("⏹ İptal isteği gönderildi…")
 
     def _do_convert(self, out_dir: str):
-        fmt        = self.fmt_var.get()
-        quality    = self.q_var.get()
-        do_resize  = self.resize_var.get()
-        keep_ratio = self.ratio_var.get()
-        rm_exif    = self.exif_var.get()
-        overwrite  = self.overwrite_var.get()
-        prefix     = self.pfx_var.get()
-        suffix     = self.sfx_var.get()
-        keepname   = self.keepname_var.get()
-        do_num     = self.num_var.get()
-        out_ext    = EXT_MAP[fmt]
-        pil_fmt    = PIL_MAP[fmt]
+        fmt          = self.fmt_var.get()
+        quality      = self.q_var.get()
+        png_compress = self.png_compress_var.get()
+        do_resize    = self.resize_var.get()
+        keep_ratio   = self.ratio_var.get()
+        rm_exif      = self.exif_var.get()
+        overwrite    = self.overwrite_var.get()
+        subfolder    = self.subfolder_var.get()
+        prefix       = self.pfx_var.get()
+        suffix       = self.sfx_var.get()
+        keepname     = self.keepname_var.get()
+        do_num       = self.num_var.get()
+        out_ext      = EXT_MAP[fmt]
+        pil_fmt      = PIL_MAP[fmt]
+        workers      = max(1, self.workers_var.get())
+        files_snap   = list(self.files)  # thread-safe kopya
 
         try:
             nstart = int(self.nstart_var.get())
@@ -636,24 +809,21 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
             self.after(0, self._finish)
             return
 
-        total = len(self.files)
-        ok = err = skip = 0
-        total_in = 0
-        total_out = 0
+        total    = len(files_snap)
+        lock     = threading.Lock()
+        counters = {"ok": 0, "err": 0, "skip": 0, "done": 0,
+                    "total_in": 0, "total_out": 0}
 
-        for i, fp in enumerate(self.files):
+        def convert_one(args: tuple):
+            i, fp = args
             if self.cancel_flag:
-                break
-
-            pct = i / total
-            self.after(0, self.prog_bar.set, pct)
-            self.after(0, self.prog_pct.configure, {"text": f"%{int(pct * 100)}"})
-            self.after(0, self.prog_lbl.configure,
-                       {"text": f"{i + 1}/{total}  —  {Path(fp).name}"})
-
+                return
             try:
-                total_in += Path(fp).stat().st_size
-                dest_dir = Path(out_dir)
+                in_size  = Path(fp).stat().st_size
+                if subfolder:
+                    dest_dir = Path(out_dir) / Path(fp).parent.name
+                else:
+                    dest_dir = Path(out_dir)
                 dest_dir.mkdir(parents=True, exist_ok=True)
 
                 stem = Path(fp).stem
@@ -666,35 +836,40 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
 
                 out_path = dest_dir / name
                 if out_path.exists() and not overwrite:
+                    with lock:
+                        counters["skip"] += 1
+                        counters["done"] += 1
                     self.log(f"⏭ Atlandı (var): {name}")
-                    skip += 1
-                    continue
+                    self._update_progress(counters["done"], total)
+                    return
 
                 img = Image.open(fp)
 
-                if pil_fmt in ("JPEG", "WEBP") and img.mode not in ("RGB", "L"):
-                    if img.mode in ("RGBA", "LA", "P"):
-                        img = img.convert("RGBA") if img.mode == "P" else img
+                # ── Mode dönüşümü (düzeltildi) ─────────────────────────────
+                if pil_fmt in ("JPEG", "WEBP", "AVIF") and img.mode not in ("RGB", "L"):
+                    if img.mode in ("RGBA", "LA", "PA", "P"):
+                        img = img.convert("RGBA")          # tek adımda RGBA'ya çek
                         bg = Image.new("RGB", img.size, (255, 255, 255))
-                        bg.paste(img, mask=img.split()[-1] if "A" in img.mode else None)
+                        bg.paste(img, mask=img.split()[3])  # alpha kanalı indeks 3
                         img = bg
                     else:
                         img = img.convert("RGB")
                 elif img.mode not in ("RGB", "RGBA", "L"):
                     img = img.convert("RGB")
 
+                # ── Boyutlandırma ──────────────────────────────────────────
                 if do_resize and tw:
                     if keep_ratio:
                         ratio = img.height / img.width
-                        new_w = tw
-                        new_h = max(1, int(new_w * ratio))
-                        img = img.resize((new_w, new_h), Image.LANCZOS)
+                        new_h = max(1, int(tw * ratio))
+                        img = img.resize((tw, new_h), Image.LANCZOS)
                     else:
                         img = img.resize((tw, th), Image.LANCZOS)
 
+                # ── Kaydetme parametreleri ─────────────────────────────────
                 kw: dict = {}
                 if pil_fmt == "JPEG":
-                    kw["quality"] = quality
+                    kw["quality"]  = quality
                     kw["optimize"] = True
                     if rm_exif:
                         kw["exif"] = b""
@@ -702,38 +877,62 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
                     kw["quality"] = quality
                     if rm_exif:
                         kw["exif"] = b""
+                elif pil_fmt == "AVIF":
+                    kw["quality"] = quality
                 elif pil_fmt == "PNG":
-                    kw["optimize"] = True
+                    kw["optimize"]       = True
+                    kw["compress_level"] = png_compress
 
                 img.save(out_path, pil_fmt, **kw)
-                total_out += out_path.stat().st_size
-                ok += 1
-                self.log(f"✅ {name}  ({self._sz(out_path)})")
+                out_size = out_path.stat().st_size
+                with lock:
+                    counters["ok"]        += 1
+                    counters["done"]      += 1
+                    counters["total_in"]  += in_size
+                    counters["total_out"] += out_size
+                self.log(f"✅ {name}  ({self._sz(out_size)})")
 
             except Exception as e:
-                err += 1
+                with lock:
+                    counters["err"]  += 1
+                    counters["done"] += 1
                 self.log(f"❌ {Path(fp).name}: {e}")
 
-        final_pct = 1.0 if not self.cancel_flag else i / total
-        self.after(0, self.prog_bar.set, final_pct)
-        self.after(0, self.prog_pct.configure,
-                   {"text": "100%" if not self.cancel_flag else ""})
+            self._update_progress(counters["done"], total)
+
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            ex.map(convert_one, enumerate(files_snap))
+
+        ok        = counters["ok"]
+        err       = counters["err"]
+        skip      = counters["skip"]
+        total_in  = counters["total_in"]
+        total_out = counters["total_out"]
+
         durum = "tamamlandı 🎉" if not self.cancel_flag else "iptal edildi ⏹"
         self.log(f"\n{'─' * 44}")
         self.log(f"Dönüştürme {durum}  |  ✅ {ok}  ⏭ {skip}  ❌ {err}")
 
-        # Boyut karşılaştırması
         if total_in > 0 and total_out > 0:
-            diff = total_in - total_out
-            sign = "↓" if diff >= 0 else "↑"
+            diff     = total_in - total_out
+            sign     = "↓" if diff >= 0 else "↑"
             pct_diff = abs(diff) / total_in * 100
-            self.log(f"📊 Boyut: {self._sz_b(total_in)} → {self._sz_b(total_out)}"
-                     f"  ({sign} {pct_diff:.1f}%  /  {self._sz_b(abs(diff))} tasarruf)")
+            self.log(f"📊 Boyut: {self._sz(total_in)} → {self._sz(total_out)}"
+                     f"  ({sign} {pct_diff:.1f}%  /  {self._sz(abs(diff))} tasarruf)")
 
+        final_pct = 1.0 if not self.cancel_flag else counters["done"] / total
+        self.after(0, self.prog_bar.set, final_pct)
+        self.after(0, self.prog_pct.configure,
+                   {"text": "100%" if not self.cancel_flag else ""})
         self.after(0, self.prog_lbl.configure,
                    {"text": f"{'Tamamlandı' if not self.cancel_flag else 'İptal'}"
                             f"  —  ✅{ok}  ⏭{skip}  ❌{err}"})
         self.after(0, self._finish, ok, err, skip)
+
+    def _update_progress(self, done: int, total: int):
+        pct = done / total
+        self.after(0, self.prog_bar.set, pct)
+        self.after(0, self.prog_pct.configure, {"text": f"%{int(pct * 100)}"})
 
     def _finish(self, ok=0, err=0, skip=0):
         self.conv_btn.configure(state="normal")
@@ -755,12 +954,7 @@ class ImageConverter(ctk.CTk, TkinterDnD.DnDWrapper):
         self.after(0, _ins)
 
     @staticmethod
-    def _sz(path: Path) -> str:
-        b = path.stat().st_size
-        return f"{b / 1024:.1f} KB" if b < 1_048_576 else f"{b / 1048576:.1f} MB"
-
-    @staticmethod
-    def _sz_b(b: int) -> str:
+    def _sz(b: int) -> str:
         return f"{b / 1024:.1f} KB" if b < 1_048_576 else f"{b / 1048576:.1f} MB"
 
 
